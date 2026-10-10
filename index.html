@@ -387,6 +387,38 @@ td.esc { color: var(--ok); } td.dead { color: #e06a6a; } td.pk { font-size: 12px
 .v8 > .note { max-width: 90ch; line-height: 1.45; }
 .settings .fld, .settings .chk { margin: 8px 0; display: block; }
 
+/* multiplayer */
+.mp .fld input, .mproom input, .mproom select { width: 100%; box-sizing: border-box; }
+.mp .fld input { padding: 8px 10px; background: #111216; border: 1px solid var(--line); color: var(--bone); font: inherit; }
+.mp .mp-adv { display: none; }
+.mp-join { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
+.mp-join .fld { flex: 1; margin: 0; }
+.mp-msg { padding: 8px 12px; border-left: 3px solid var(--blood); background: rgba(92, 10, 20, .25); margin: 10px 0; }
+.mp.busy { opacity: .85; }
+.note.small { font-size: 12px; }
+.row-actions.left { justify-content: flex-start; }
+.mproom .code { font-family: var(--font-title); font-size: 56px; letter-spacing: .12em; color: var(--bone); }
+.slots { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.slot { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 10px; background: rgba(255,255,255,.03); border: 1px solid var(--line); border-left: 3px solid #555; }
+.slot.killer { border-left-color: var(--blood); }
+.slot.survivor { border-left-color: #7fa6a2; }
+.slot.mine { background: rgba(127,166,162,.10); }
+.slot .sl { text-transform: uppercase; letter-spacing: .12em; font-size: 11px; color: var(--bone-dim); }
+.slot .who { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.slot .who small { width: 100%; color: var(--bone-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .who em { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--bone-dim); }
+.slot .bot { color: var(--bone-dim); font-weight: 500; }
+.slot select { background: #111216; color: var(--bone); border: 1px solid var(--line); padding: 3px 6px; font: inherit; font-size: 13px; max-width: 220px; }
+.rd { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; padding: 1px 6px; border: 1px solid #555; color: #999; }
+.rd.on { border-color: #6fae6a; color: #9fd09a; }
+.mpchat { margin-top: 14px; border: 1px solid var(--line); background: rgba(0,0,0,.25); }
+.mpchat .msgs { height: 110px; overflow-y: auto; padding: 6px 10px; font-size: 13px; color: #c4bdaf; }
+.mpchat .msgs i { color: var(--bone-dim); }
+.mpchat input { width: 100%; box-sizing: border-box; padding: 8px 10px; background: #111216; border: 0; border-top: 1px solid var(--line); color: var(--bone); font: inherit; }
+@media (max-width: 700px) { .slot { grid-template-columns: 1fr; } }
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 60; background: rgba(20,21,25,.96); border: 1px solid var(--line); border-left: 3px solid var(--blood); padding: 10px 16px; max-width: min(560px, 90vw); transition: opacity .6s; font-size: 14px; }
+.toast.out { opacity: 0; }
+
 </style>
 <script>
 (function(){
@@ -10809,7 +10841,7 @@ class Match {
       k.x = sp.x; k.y = sp.y;
       this.perks.register(k, (c.perks || []).slice(0, 4));
       k.botDifficulty = c.difficulty ?? this.cfg.killerDifficulty;
-      k.isPlayer = i === 0 && this.cfg.playerRole === 'killer';
+      k.isPlayer = !!c.human || (i === 0 && this.cfg.playerRole === 'killer');
       return k;
     });
     this.killer = this.killers[0];
@@ -10832,7 +10864,7 @@ class Match {
       sv.x = sp.x + (i >= 4 ? 20 : 0); sv.y = sp.y;
       const perkIds = sc.perks || randomSurvivorPerks(this.rng, sc.perkMode || this.cfg.perkMode, i);
       this.perks.register(sv, perkIds);
-      if (i === 0 && this.cfg.playerRole === 'survivor') { sv.isPlayer = true; sv.name = this.cfg.playerName || sv.name; } else new SurvivorAI(sv, this, diff, pers);
+      if (sc.human || (i === 0 && this.cfg.playerRole === 'survivor')) { sv.isPlayer = true; if (!sc.human) sv.name = this.cfg.playerName || sv.name; } else new SurvivorAI(sv, this, diff, pers);
       if (this.cfg.modifiers.startInjured) sv.health = 'injured';
       this.survivors.push(sv);
     }
@@ -10951,7 +10983,7 @@ class Match {
       k.update(dt, this);
       k.power.tick?.(dt, this);
     }
-    this.playerCtl?.update(dt);
+    if (this.playerCtls) for (const c of this.playerCtls) c.update(dt); else this.playerCtl?.update(dt);
     this.updateMinions(dt);
     this.updateProjectiles(dt); this.updateZones(dt);
     for (const s of this.survivors) { if (s.ai) s.ai.update(dt); s.update(dt, this); }
@@ -11149,11 +11181,13 @@ class Match {
     this.audio?.play('ui');
   }
   // Called by the player controller when SPACE is pressed (or the needle runs out).
-  answerPlayerCheck(s, pressed) {
+  // forced: a result judged on a network client (its needle is what the player saw)
+  answerPlayerCheck(s, pressed, forced = null) {
     const c = s.skillCheck; if (!c) return null;
     const pos = (this.time - c.t0 - c.warn) / c.dur;
     let res = 'fail';
-    if (pressed && pos >= c.zone && pos <= c.zone + c.good) res = c.mod.forceGreat || pos <= c.zone + c.great ? 'great' : 'good';
+    if (forced) res = forced === 'great' || forced === 'good' ? (c.mod.forceGreat ? 'great' : forced) : 'fail';
+    else if (pressed && pos >= c.zone && pos <= c.zone + c.good) res = c.mod.forceGreat || pos <= c.zone + c.great ? 'great' : 'good';
     s.skillCheck = null; s.lastCheck = { res, t: this.time };
     if (c.kind === 'repair') this.resolveSkillCheck(s, c.target, res, c.mod, 'repair');
     else if (c.kind === 'heal') { if (res === 'fail') { const t = c.target; t.healProgress = Math.max(0, t.healProgress - 0.1); this.addGrunt(t); this.loudNoise(s.x, s.y, 'skillcheck'); this.audio?.play('genfail'); } else if (res === 'great') c.target.healProgress = Math.min(0.999, c.target.healProgress + 0.02); }
@@ -12433,7 +12467,7 @@ const HOLD = new Set(['repair', 'heal', 'healSelf', 'unhook', 'openGate', 'searc
 
 class SurvivorController {
   constructor(m, s) {
-    this.m = m; this.s = s; m.playerCtl = this;
+    this.m = m; this.s = s; m.playerCtl ||= this; (m.playerCtls ||= []).push(this); this.grace = 0;
     this.in = { mx: 0, my: 0, walk: false, crouch: false, aimX: s.x + 40, aimY: s.y, e: false, eP: false, space: false, spaceP: false, item: false, itemP: false, perkP: false, left: false, right: false, leftP: false, rightP: false };
     this.held = null; this.lastWig = null; this.wigT = 0;
   }
@@ -12447,7 +12481,7 @@ class SurvivorController {
     if (s.skillCheck) {
       const c = s.skillCheck; const pos = (m.time - c.t0 - c.warn) / c.dur;
       if (I.spaceP && pos > -0.2) { m.answerPlayerCheck(s, true); I.spaceP = false; }
-      else if (pos > 1.05) m.answerPlayerCheck(s, false);
+      else if (pos > 1.05 + this.grace) m.answerPlayerCheck(s, false);
       else if (c.kind === 'repair' && s.action?.type !== 'repair') s.skillCheck = null;
       else if (c.kind === 'heal' && s.action?.type !== 'heal') s.skillCheck = null;
     }
@@ -13766,6 +13800,7 @@ class Menus {
         <nav class="main-nav">
           <button class="btn primary" data-go="killer">Play as Killer <small>you hunt · bot survivors</small></button>
           <button class="btn primary" data-go="survivor">Play as Survivor <small>you + 3 bot teammates vs a killer bot</small></button>
+          <button class="btn primary" data-go="mp">Multiplayer <small>custom matches online · humans and bots in any slot</small></button>
           <button class="btn" data-go="v8">2v8 Mode <small>two killers · eight survivors · classes</small></button>
           <button class="btn" data-go="story">Story Mode <small>${STORY_LEVELS.length} killer scenarios</small></button>
           <button class="btn" data-go="custom">Custom Match <small>configure every survivor bot</small></button>
@@ -13782,7 +13817,7 @@ class Menus {
     this.click('[data-go]', (e, b) => {
       const g = b.dataset.go;
       if (g === 'story') this.story(); else if (g === 'custom') this.customScreen(); else if (g === 'lab') this.lab(); else if (g === 'controls') this.controls();
-      else if (g === 'killer') this.loadoutScreen({ match: true }); else if (g === 'survivor') this.survivorSetup(); else if (g === 'v8') this.v8Setup();
+      else if (g === 'mp') this.mpConnect(); else if (g === 'killer') this.loadoutScreen({ match: true }); else if (g === 'survivor') this.survivorSetup(); else if (g === 'v8') this.v8Setup();
       else if (g === 'kselect') this.loadoutScreen({ onDone: () => this.main(), browse: true }); else if (g === 'sload') this.survivorLoadout({ onDone: () => this.main() }); else if (g === 'settings') this.settingsScreen();
     });
   }
@@ -13905,6 +13940,114 @@ class Menus {
       if (V.role === 'survivor') { const ch = SURVIVOR_ROSTER[this.sload.character] || SURVIVOR_ROSTER[0]; cfg.playerName = ch.name; cfg.survivors[0].name = ch.name; }
       this.api.start(cfg);
     });
+  }
+
+  // ------------------------------------------------------------- multiplayer
+  mpLoadout() {
+    const L = this.loadout, S = this.sload;
+    return { killer: L.killer, kperks: L.perks, addons: L.addons, sperks: S.perks, item: S.item || null, addon: S.addon || '', character: S.character };
+  }
+  mpConnect(msg = '', code = '') {
+    const net = this.api.net();
+    const url = this.mpUrl ?? net.constructor.defaultUrl(); const name = this.mpName || (() => { try { return localStorage.getItem('fogtrial.name') || ''; } catch (e) { return ''; } })();
+    const sameOrigin = /^https?:$/.test(location.protocol) && url === location.origin;
+    this.show(`<div class="panel narrow mp"><h2>Multiplayer</h2>
+      <p class="note">Custom matches like Dead by Daylight's: one player creates a room and shares the code. Everyone picks a killer or survivor slot; empty slots are played by bots.</p>
+      ${msg ? `<p class="mp-msg">${esc(msg)}</p>` : ''}
+      <label class="fld">Your name<input id="mp-name" maxlength="16" value="${esc(name)}" placeholder="Player"></label>
+      <label class="fld ${sameOrigin ? 'mp-adv' : ''}">Server address<input id="mp-url" value="${esc(url)}" placeholder="https://your-game.onrender.com"></label>
+      ${sameOrigin ? '<p class="note small">Connected to this site’s server.</p>' : '<p class="note small">The address of your Fog Trial server (for example your Render web service).</p>'}
+      <div class="row-actions left"><button class="btn primary" data-create>Create room</button></div>
+      <div class="mp-join"><label class="fld">Room code<input id="mp-code" maxlength="4" value="${esc(code || this.mpCode || '')}" placeholder="ABCD" style="text-transform:uppercase"></label><button class="btn" data-join>Join</button></div>
+      <div class="row-actions"><button class="btn small" data-back>Back</button></div></div>`, 'menu');
+    const r = this.root;
+    const go = async (what) => {
+      this.mpName = $('#mp-name', r).value.trim() || 'Player'; this.mpUrl = $('#mp-url', r).value.trim(); this.mpCode = $('#mp-code', r).value.trim().toUpperCase();
+      try { localStorage.setItem('fogtrial.name', this.mpName); } catch (e) { /* ignore */ }
+      if (!this.mpUrl) { this.mpConnect('Enter the server address first.'); return; }
+      if (what === 'join' && this.mpCode.length !== 4) { this.mpConnect('Enter the 4-letter room code.'); return; }
+      $('.mp', r).classList.add('busy'); r.querySelectorAll('button').forEach((b) => (b.disabled = true));
+      const note = document.createElement('p'); note.className = 'mp-msg'; note.textContent = 'Connecting… a sleeping Render server takes up to a minute to wake up.'; $('.mp', r).appendChild(note);
+      try {
+        if (!net.connected) await net.connect(this.mpUrl, this.mpName);
+        net.send(what === 'create' ? { t: 'create', loadout: this.mpLoadout() } : { t: 'join', code: this.mpCode, loadout: this.mpLoadout() });
+        this.mpWaiting = true;
+      } catch (e) { this.mpConnect(e.message || String(e)); }
+    };
+    this.click('[data-create]', () => go('create')); this.click('[data-join]', () => go('join'));
+    $('#mp-code', r).addEventListener('keydown', (e) => { if (e.key === 'Enter') go('join'); });
+    this.click('[data-back]', () => this.main());
+  }
+  mpRoom(state = null) {
+    const net = this.api.net(); const R = state || net.room; if (!R) { this.mpConnect(); return; }
+    this.mpWaiting = false; this.inRoom = true;
+    const me = R.players.find((p) => p.id === R.you) || {}; const host = R.hostId === R.you;
+    const pl = (id) => R.players.find((p) => p.id === id);
+    const opt = (v, cur, label) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(label)}</option>`;
+    const v8 = R.mode === '2v8';
+    const row = (s) => {
+      const p = s.pid ? pl(s.pid) : null; const mine = s.pid === R.you; const L = p?.loadout || {};
+      const label = s.role === 'killer' ? (v8 ? `Killer ${'AB'[s.idx]}` : 'Killer') : `Survivor ${s.idx + 1}`;
+      let who;
+      if (p) {
+        const what = s.role === 'killer' ? (KILLERS[L.killer]?.name || 'The Trapper') : (SURVIVOR_ROSTER[L.character]?.name || '') + (v8 ? '' : (L.sperks?.length ? ' · ' + L.sperks.map((x) => SURVIVOR_PERKS[x]?.name).filter(Boolean).join(', ') : ''));
+        who = `<b>${esc(p.name)}</b>${mine ? ' <em>(you)</em>' : ''}${p.id === R.hostId ? ' <em>host</em>' : ''} <span class="rd ${p.ready || p.id === R.hostId ? 'on' : ''}">${p.ready || p.id === R.hostId ? 'ready' : 'not ready'}</span><small>${esc(what)}</small>`;
+      } else {
+        who = `<b class="bot">Bot</b>${s.role === 'killer' ? (host ? ` <select data-bk="${s.i}">${KILLER_LIST.map((k) => opt(k.id, s.botKiller, k.name)).join('')}</select>` : ` <small>${esc(KILLERS[s.botKiller]?.name || '')}</small>`) : ''}
+          ${host ? `<select data-bd="${s.i}" title="Bot difficulty">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((d) => opt(d, s.botDiff, `${d} · ${(s.role === 'killer' ? KILLER_DIFFICULTY_LABELS : DIFFICULTY_LABELS)[d]}`)).join('')}</select>` : `<small>difficulty ${s.botDiff}</small>`}`;
+      }
+      const cls = v8 ? (s.role === 'killer' ? KILLER_CLASSES : SURVIVOR_CLASSES) : null;
+      const clsSel = cls ? ((host || mine) ? `<select data-cls="${s.i}">${Object.entries(cls).map(([id, c]) => opt(id, s.cls, c.name)).join('')}</select>` : `<small>${esc(cls[s.cls]?.name || '')}</small>`) : '';
+      const act = mine ? `<button class="btn small" data-unslot>Leave slot</button>` : !p && !R.playing ? `<button class="btn small" data-take="${s.i}">Take</button>` : host && p && !R.playing ? `<button class="btn small ghost" data-kick="${s.i}">Move to spectators</button>` : '';
+      return `<li class="slot ${s.role} ${p ? 'human' : 'botslot'} ${mine ? 'mine' : ''}"><span class="sl">${label}</span><span class="who">${who}</span>${clsSel ? `<span class="cls">${clsSel}</span>` : ''}<span class="act">${act}</span></li>`;
+    };
+    const specs = R.players.filter((p) => p.slot < 0);
+    const mySlot = R.slots.find((s) => s.pid === R.you);
+    const chatVal = $('#mp-chat', this.root)?.value || ''; const chatFocus = document.activeElement?.id === 'mp-chat';
+    this.show(`<div class="panel wide mproom"><div class="row-head"><div><p class="kicker">Room</p><h2 class="code">${esc(R.code)}</h2></div>
+        <div class="row-actions"><button class="btn small" data-copy>Copy invite link</button><button class="btn small" data-leave>Leave room</button></div></div>
+      ${R.playing ? '<p class="mp-msg">A match is in progress — you are in the lobby until it ends.</p>' : ''}
+      <div class="cgrid mpset">
+        <fieldset><legend>Match</legend>
+          <label class="fld">Mode<select id="mp-mode" ${host && !R.playing ? '' : 'disabled'}>${opt('1v4', R.mode, '1v4 — one killer, four survivors')}${opt('2v8', R.mode, '2v8 — two killers, eight survivors')}</select></label>
+          <label class="fld">Map<select id="mp-map" ${host && !R.playing ? '' : 'disabled'}>${opt('random', R.mapId, 'Random map')}${MAP_LIST.map((mp) => opt(mp.id, R.mapId, mp.name)).join('')}</select></label>
+          ${host ? '' : '<p class="note small">The host sets the mode, map and bots.</p>'}
+        </fieldset>
+        <fieldset><legend>Your loadout</legend>
+          ${mySlot ? (mySlot.role === 'killer' ? `<p>${esc(KILLERS[this.loadout.killer]?.name || '')} · ${this.loadout.perks.map((x) => KILLER_PERKS[x]?.name).filter(Boolean).join(', ') || 'no perks'}</p><button class="btn small" data-kload>Choose killer &amp; perks…</button>`
+            : `<p>${esc(SURVIVOR_ROSTER[this.sload.character]?.name || '')} · ${v8 ? 'class: ' + esc(SURVIVOR_CLASSES[mySlot.cls]?.name || '') : (this.sload.perks.map((x) => SURVIVOR_PERKS[x]?.name).filter(Boolean).join(', ') || 'no perks') + ' · ' + (this.sload.item ? esc(ITEMS[this.sload.item]?.name) : 'no item')}</p><button class="btn small" data-sload>Choose character, perks &amp; item…</button>`)
+            : '<p class="note">You are spectating. Take a slot to play.</p>'}
+          ${v8 ? '<p class="note small">2v8 uses classes instead of perks and items.</p>' : ''}
+        </fieldset>
+      </div>
+      <h3>Killers</h3><ul class="slots">${R.slots.filter((s) => s.role === 'killer').map(row).join('')}</ul>
+      <h3>Survivors</h3><ul class="slots">${R.slots.filter((s) => s.role === 'survivor').map(row).join('')}</ul>
+      ${specs.length ? `<p class="note">Spectating: ${specs.map((p) => esc(p.name)).join(', ')}</p>` : ''}
+      <div class="row-actions">${!host && mySlot ? `<button class="btn ${me.ready ? '' : 'primary'}" data-ready>${me.ready ? 'Not ready' : 'Ready'}</button>` : ''}${host ? `<button class="btn primary" data-start ${R.playing ? 'disabled' : ''}>Start match</button>` : ''}</div>
+      <div class="mpchat"><div class="msgs">${R.chat.map((c) => `<div>${c.who ? `<b>${esc(c.who)}</b> ` : '<i>'}${esc(c.text)}${c.who ? '' : '</i>'}</div>`).join('')}</div>
+        <input id="mp-chat" maxlength="200" placeholder="Say something… (Enter)" value="${esc(chatVal)}"></div></div>`, 'menu');
+    const r = this.root, send = (o) => net.send(o);
+    const msgs = $('.mpchat .msgs', r); msgs.scrollTop = msgs.scrollHeight;
+    const chat = $('#mp-chat', r); if (chatFocus) { chat.focus(); chat.setSelectionRange(chat.value.length, chat.value.length); }
+    chat.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && chat.value.trim()) { send({ t: 'chat', text: chat.value.trim() }); chat.value = ''; } });
+    $('#mp-mode', r).addEventListener('change', (e) => send({ t: 'settings', mode: e.target.value }));
+    $('#mp-map', r).addEventListener('change', (e) => send({ t: 'settings', mapId: e.target.value }));
+    r.querySelectorAll('[data-bk]').forEach((el) => el.addEventListener('change', () => send({ t: 'slot', i: +el.dataset.bk, botKiller: el.value })));
+    r.querySelectorAll('[data-bd]').forEach((el) => el.addEventListener('change', () => send({ t: 'slot', i: +el.dataset.bd, botDiff: +el.value })));
+    r.querySelectorAll('[data-cls]').forEach((el) => el.addEventListener('change', () => send({ t: 'slot', i: +el.dataset.cls, cls: el.value })));
+    this.click('[data-take]', (e, b) => send({ t: 'take', i: +b.dataset.take }));
+    this.click('[data-kick]', (e, b) => send({ t: 'slot', i: +b.dataset.kick, kick: true }));
+    this.click('[data-unslot]', () => send({ t: 'unslot' }));
+    this.click('[data-ready]', () => send({ t: 'ready', v: !me.ready }));
+    this.click('[data-start]', () => send({ t: 'start' }));
+    this.click('[data-leave]', () => { send({ t: 'leave' }); net.room = null; this.inRoom = false; this.mpConnect(); });
+    this.click('[data-copy]', () => { const link = `${location.origin}${location.pathname}?room=${R.code}`; try { navigator.clipboard.writeText(link); } catch (e) { /* ignore */ } this.toast('Invite link copied: ' + link); });
+    this.click('[data-kload]', () => { this.inRoom = false; this.loadoutScreen({ browse: true, onDone: () => { this.saveLoadout(); send({ t: 'loadout', ...this.mpLoadout() }); this.mpRoom(); } }); });
+    this.click('[data-sload]', () => { this.inRoom = false; this.survivorLoadout({ onDone: () => { this.saveLoadout(); send({ t: 'loadout', ...this.mpLoadout() }); this.mpRoom(); } }); });
+  }
+  toast(text) {
+    const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.appendChild(t);
+    setTimeout(() => t.classList.add('out'), 3500); setTimeout(() => t.remove(), 4200);
   }
 
   // ------------------------------------------------------------- settings
@@ -14048,7 +14191,7 @@ class Menus {
       $('#km-n', this.root).addEventListener('change', (e) => (KM.survivorCount = +e.target.value));
       this.bindSlider('km-d', DIFFICULTY_LABELS, (v) => (KM.survivorDifficulty = v));
     }
-    this.click('[data-back]', () => (story ? this.story(story) : match || browse ? this.main() : this.customScreen()));
+    this.click('[data-back]', () => (story ? this.story(story) : browse && onDone ? onDone(L) : match || browse ? this.main() : this.customScreen()));
     this.click('[data-k]', (e, b) => { L.killer = b.dataset.k; L.addons = []; again(); });
     this.click('[data-cat]', (e, b) => { this.perkCat = b.dataset.cat; again(); });
     this.click('[data-p]', (e, b) => { const id = b.dataset.p; const i = L.perks.indexOf(id); if (i >= 0) L.perks.splice(i, 1); else if (L.perks.length < 4) L.perks.push(id); again(); });
@@ -14133,14 +14276,14 @@ class Menus {
   // ------------------------------------------------------------- results
   results(res, { story = null, passed = false, nextLevel = null } = {}) {
     const surv = res.playerRole === 'survivor', v8 = res.mode === '2v8';
-    const rows = res.survivors.map((s) => `<tr class="${s.isPlayer ? 'me' : ''}"><td><span class="dot" style="--c:${s.color}"></span>${esc(s.name)}${s.isPlayer ? ' <em>(you)</em>' : ''}${s.cls ? ` <small>${esc(SURVIVOR_CLASSES[s.cls]?.name || s.cls)}</small>` : ''}</td><td class="${s.outcome.startsWith('Escaped') ? 'esc' : 'dead'}">${esc(s.outcome)}</td><td>${s.isPlayer ? 'Player' : `D${s.difficulty} · ${esc(s.archetype)}`}</td><td>${(s.stats.gens).toFixed(1)}</td><td>${s.stats.pallets}/${s.stats.stuns}</td><td>${s.stats.vaults}</td><td>${s.stats.unhooks}</td><td>${s.stats.heals}</td><td class="pk">${s.perks.map(esc).join(', ') || '—'}<br><small>${esc(s.item)}</small></td></tr>`).join('');
+    const rows = res.survivors.map((s) => `<tr class="${(s.isYou ?? s.isPlayer) ? 'me' : ''}"><td><span class="dot" style="--c:${s.color}"></span>${esc(s.name)}${(s.isYou ?? s.isPlayer) ? ' <em>(you)</em>' : ''}${s.cls ? ` <small>${esc(SURVIVOR_CLASSES[s.cls]?.name || s.cls)}</small>` : ''}</td><td class="${s.outcome.startsWith('Escaped') ? 'esc' : 'dead'}">${esc(s.outcome)}</td><td>${s.isPlayer ? 'Player' : `D${s.difficulty} · ${esc(s.archetype)}`}</td><td>${(s.stats.gens).toFixed(1)}</td><td>${s.stats.pallets}/${s.stats.stuns}</td><td>${s.stats.vaults}</td><td>${s.stats.unhooks}</td><td>${s.stats.heals}</td><td class="pk">${s.perks.map(esc).join(', ') || '—'}<br><small>${esc(s.item)}</small></td></tr>`).join('');
     const krows = res.killers.map((k) => `<tr><td><span class="dot" style="--c:${k.accent}"></span>${esc(k.name)}${k.cls ? ` <small>${esc(KILLER_CLASSES[k.cls]?.name || k.cls)}</small>` : ''}</td><td>${k.bot ? `Bot · ${k.difficulty} ${esc(KILLER_DIFFICULTY_LABELS[k.difficulty] || '')}` : 'Player'}</td><td>${k.stats.hits}</td><td>${k.stats.downs}</td><td>${k.stats.hooks}</td><td>${k.stats.kicks}</td><td>${k.stats.palletsBroken}</td><td>${k.stats.stuns}</td></tr>`).join('');
     const total = Object.values(res.score).reduce((a, b) => a + b, 0);
     const log = res.log.filter((l) => !/questionable/.test(l.text)).slice(-14).map((l) => `<li><time>${Math.floor(l.t / 60)}:${String(Math.floor(l.t % 60)).padStart(2, '0')}</time><b style="color:${l.color}">${esc(l.who)}</b> ${esc(l.text)}</li>`).join('');
     const me = res.player;
     const grade = surv ? (me && /Escaped/.test(me.outcome) ? 'You Escaped' : me && /Sacrificed|Killed|Fog/.test(me.outcome) ? (me.outcome === 'Sacrificed' ? 'Sacrificed' : 'Killed') : 'Trial over')
       : v8 ? (res.kills > res.total / 2 ? 'The Killers Win' : res.escapes > res.total / 2 ? 'The Survivors Win' : 'A Draw in the Fog') : res.grade;
-    const tag = v8 ? '2v8 · ' + (surv ? 'Survivor' : res.playerRole === 'killer' ? 'Killer A' : 'Spectator') : surv ? 'Play as Survivor' : story ? (story.random ? '' : 'Scenario ' + story.id + ' · ') + esc(story.name) : 'Custom trial';
+    const tag = res.net ? `Multiplayer ${v8 ? '2v8' : '1v4'} · ${surv ? 'Survivor' : res.playerRole === 'killer' ? 'Killer' : 'Spectator'}` : v8 ? '2v8 · ' + (surv ? 'Survivor' : res.playerRole === 'killer' ? 'Killer A' : 'Spectator') : surv ? 'Play as Survivor' : story ? (story.random ? '' : 'Scenario ' + story.id + ' · ') + esc(story.name) : 'Custom trial';
     this.show(`<div class="panel wide results"><p class="kicker">${tag}</p>
       <h2 class="grade">${esc(grade)}</h2>
       <p class="tally"><b>${res.kills}</b> killed · <b>${res.escapes}</b> escaped of ${res.total} · ${Math.floor(res.time / 60)}:${String(Math.floor(res.time % 60)).padStart(2, '0')}${story ? ` · <span class="${passed ? 'pass' : 'fail'}">${passed ? 'Trial passed' : `Needed ${story.requiredKills} kills`}</span>` : ''}</p>
@@ -14148,7 +14291,8 @@ class Menus {
       <h3>${res.killers.length > 1 ? 'Killers' : 'Killer'}</h3><div class="tblwrap"><table><thead><tr><th>Killer</th><th>Control</th><th>Hits</th><th>Downs</th><th>Hooks</th><th>Kicks</th><th>Pallets broken</th><th>Stunned</th></tr></thead><tbody>${krows}</tbody></table></div>
       <h3>Survivors</h3><div class="tblwrap"><table><thead><tr><th>Survivor</th><th>Outcome</th><th>Control</th><th>Gens</th><th>Pallets/stuns</th><th>Vaults</th><th>Rescues</th><th>Heals</th><th>Build</th></tr></thead><tbody>${rows}</tbody></table></div>
       <h3>${surv ? 'What your team was thinking' : 'What the survivors were thinking'}</h3><ul class="ailog">${log || '<li>No notable plays recorded.</li>'}</ul>
-      <div class="row-actions"><button class="btn" data-menu>Main menu</button><button class="btn" data-retry>Play again</button>${nextLevel ? `<button class="btn primary" data-next>Next trial</button>` : ''}</div></div>`, 'menu');
+      <div class="row-actions">${res.net ? '<button class="btn primary" data-lobby>Back to the lobby</button>' : `<button class="btn" data-menu>Main menu</button><button class="btn" data-retry>Play again</button>`}${nextLevel ? `<button class="btn primary" data-next>Next trial</button>` : ''}</div></div>`, 'menu');
+    this.click('[data-lobby]', () => this.mpRoom());
     this.click('[data-menu]', () => (story ? this.story(story) : this.main()));
     this.click('[data-retry]', () => this.api.retry());
     this.click('[data-next]', () => this.story(nextLevel));
@@ -14284,6 +14428,325 @@ class DebugPanel {
 
 return { DebugPanel };
 };
+__defs["js/net/protocol.js"] = function(){
+// Network state sync shared by the server (Node) and the client (browser).
+//
+// The server runs the real Match. Clients build a "mirror" Match from the same config and seed
+// (so the map, perks and characters are identical) and never simulate it: every snapshot
+// patches the mirror's live state. The renderer and HUDs then draw the mirror exactly as they
+// draw a local match.
+//
+// Encoding: values are turned into JSON-safe data; references to game objects become
+// { $r: 'sv:0' } style refs (survivor 0, killer 1, pallet 7, device #12…), Sets/Maps/Infinity are
+// tagged, functions are dropped. The server diffs every object field-by-field per client, so
+// only what changed is sent.
+const { Trap } = __req("js/entities/objects.js");
+const { Device, Projectile, Zone, Minion } = __req("js/killers/framework.js");
+
+const NET_VERSION = 1;
+const SNAP_HZ = 20;
+// fields never synced (bot brains, static definitions, collision geometry, scratch state)
+const SKIP = new Set(['ai', 'bot', 'def', 'Power', 'solid', 'rect', 'doorRect', 'exitRect', 'tile', 'aiProfile', 'unsubs', 'controller', 'netId']);
+// dynamic object lists: server objects get a numeric net id
+const LISTS = { traps: 'tp', devices: 'dv', minions: 'mn', projectiles: 'pj', zones: 'zn' };
+// static map arrays, matched by index (same seed → same map)
+const STATIC = { gens: 'gn', pallets: 'pl', windows: 'wn', hooks: 'hk', gates: 'gt', chests: 'ch', totems: 'tm' };
+// append-only feeds streamed as new items
+const FEEDS = ['scratches', 'blood', 'grunts', 'sounds', 'loudNoises', 'notify', 'feed', 'aiLog'];
+// match-level fields patched like an object
+const MATCH_FIELDS = ['time', 'state', 'stateT', 'gensDone', 'gatesPowered', 'collapse', 'collapseT', 'score', 'reveals', 'killerReveals', 'instinct', 'hookStageTime', 'camping'];
+
+const round = (n) => (Number.isInteger(n) ? n : Math.round(n * 100) / 100);
+
+class Registry {
+  constructor(m) { this.m = m; this.byObj = new Map(); this.byRef = new Map(); this.nid = new WeakMap(); this.next = 1; }
+  set(obj, ref) { if (!obj) return; this.byObj.set(obj, ref); this.byRef.set(ref, obj); }
+  // server: refresh every tick (lists change)
+  rebuild() {
+    const m = this.m; this.byObj.clear(); this.byRef.clear();
+    this.set(m, 'm'); this.set(m.map, 'map'); this.set(m.world, 'world'); this.set(m.map.nav, 'nav'); this.set(m.bb, 'bb'); this.set(m.perks, 'perks'); this.set(m.events, 'events'); this.set(m.fx, 'fx'); this.set(m.map.hatch, 'ht');
+    m.survivors.forEach((s, i) => this.set(s, 'sv:' + i)); m.killers.forEach((k, i) => this.set(k, 'kl:' + i));
+    for (const [arr, p] of Object.entries(STATIC)) (m.map[arr] || []).forEach((o, i) => this.set(o, p + ':' + i));
+    for (const [arr, p] of Object.entries(LISTS)) for (const o of m[arr]) this.set(o, p + ':' + this.idOf(o));
+    for (const t of m.map.tiles || []) this.set(t, 'ti:' + t.id);
+  }
+  idOf(o) { let i = this.nid.get(o); if (!i) { i = this.next++; this.nid.set(o, i); } return i; }
+}
+
+// ---------------------------------------------------------------- encode (server)
+function enc(v, reg, depth = 0) {
+  if (v === null || v === undefined) return null;
+  const t = typeof v;
+  if (t === 'number') return Number.isFinite(v) ? round(v) : Number.isNaN(v) ? 0 : { $i: v > 0 ? 1 : -1 };
+  if (t === 'string' || t === 'boolean') return v;
+  if (t === 'function' || t === 'symbol' || t === 'bigint') return undefined;
+  const r = reg.byObj.get(v); if (r) return { $r: r };
+  if (depth > 6) return undefined;
+  if (Array.isArray(v)) return v.map((x) => { const e = enc(x, reg, depth + 1); return e === undefined ? null : e; });
+  if (v instanceof Set) return { $s: [...v].map((x) => enc(x, reg, depth + 1)).filter((x) => x !== undefined) };
+  if (v instanceof Map) return { $m: [...v].map(([a, b]) => [enc(a, reg, depth + 1), enc(b, reg, depth + 1)]).filter(([a, b]) => a !== undefined && b !== undefined) };
+  if (ArrayBuffer.isView(v)) return undefined;
+  const o = {};
+  for (const k of Object.keys(v)) { if (SKIP.has(k) || k[0] === '_') continue; const e = enc(v[k], reg, depth + 1); if (e !== undefined) o[k] = e; }
+  return o;
+}
+// Encode an object's own fields into { key: jsonString } (for diffing).
+function fieldsOf(obj, reg, only = null) {
+  const out = {};
+  for (const k of only || Object.keys(obj)) {
+    if (SKIP.has(k) || k[0] === '_') continue;
+    const e = enc(obj[k], reg, 1); if (e === undefined) continue;
+    out[k] = JSON.stringify(e);
+  }
+  return out;
+}
+function classTag(o) {
+  if (o instanceof Trap) return 'Trap';
+  if (o instanceof Device) return 'Device';
+  if (o instanceof Projectile) return 'Projectile';
+  if (o instanceof Zone) return 'Zone';
+  if (o instanceof Minion) return 'Minion';
+  return 'Obj';
+}
+
+// ---------------------------------------------------------------- decode (client)
+const PROTO = { Trap: Trap.prototype, Device: Device.prototype, Projectile: Projectile.prototype, Zone: Zone.prototype, Minion: Minion.prototype, Obj: Object.prototype };
+function makeObj(tag) { return Object.create(PROTO[tag] || Object.prototype); }
+
+const isTagged = (v) => v && typeof v === 'object' && !Array.isArray(v) && ('$r' in v || '$s' in v || '$m' in v || '$i' in v);
+function dec(v, resolve) {
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => dec(x, resolve));
+  if ('$r' in v) return resolve(v.$r);
+  if ('$i' in v) return v.$i > 0 ? Infinity : -Infinity;
+  if ('$s' in v) return new Set(v.$s.map((x) => dec(x, resolve)));
+  if ('$m' in v) return new Map(v.$m.map(([a, b]) => [dec(a, resolve), dec(b, resolve)]));
+  const o = {}; for (const k in v) o[k] = dec(v[k], resolve); return o;
+}
+const isPlainTarget = (t) => t && typeof t === 'object' && !Array.isArray(t) && !(t instanceof Set) && !(t instanceof Map);
+// Patch one field into a live object, keeping existing nested objects (and their prototypes).
+function applyField(target, key, val, resolve, isEntity) {
+  const cur = target[key];
+  if (val && typeof val === 'object' && !Array.isArray(val) && !isTagged(val) && isPlainTarget(cur) && !isEntity(cur)) {
+    for (const k in val) applyField(cur, k, val[k], resolve, isEntity);
+    for (const k of Object.keys(cur)) if (!(k in val) && !SKIP.has(k) && k[0] !== '_' && typeof cur[k] !== 'function') delete cur[k];
+    return;
+  }
+  if (Array.isArray(val) && Array.isArray(cur) && cur.length === val.length && val.every((x) => x && typeof x === 'object' && !Array.isArray(x) && !isTagged(x)) && cur.every((x) => isPlainTarget(x) && !isEntity(x))) {
+    val.forEach((x, i) => { for (const k in x) applyField(cur[i], k, x[k], resolve, isEntity); });
+    return;
+  }
+  try { target[key] = dec(val, resolve); } catch (e) { /* getter-only property: ignore */ }
+}
+
+return { NET_VERSION, SNAP_HZ, SKIP, LISTS, STATIC, FEEDS, MATCH_FIELDS, Registry, enc, fieldsOf, classTag, makeObj, dec, applyField };
+};
+__defs["js/net/client.js"] = function(){
+// Multiplayer client: lobby connection, the mirror match, snapshot application, smoothing of
+// other players and client-side prediction (with server reconciliation) for your own movement.
+const { Match } = __req("js/core/game.js");
+const { M, dist } = __req("js/core/util.js");
+const { Registry, applyField, dec, makeObj, LISTS, STATIC, NET_VERSION } = __req("js/net/protocol.js");
+
+const SMOOTH = new Set(['sv', 'kl', 'mn']);
+class NetClient {
+  constructor({ onRoom, onStart, onEnd, onError, onClose, onChat }) {
+    this.cb = { onRoom, onStart, onEnd, onError, onClose, onChat };
+    this.ws = null; this.pid = null; this.room = null; this.m = null; this.seq = 0; this.hist = []; this.pending = {}; this.sendT = 0; this.prompts = [];
+  }
+  static defaultUrl() {
+    try { const s = localStorage.getItem('fogtrial.server'); if (s) return s; } catch (e) { /* ignore */ }
+    if (location.protocol === 'http:' || location.protocol === 'https:') return location.origin;
+    return '';
+  }
+  wsUrl(u) { u = (u || '').trim().replace(/\/+$/, ''); if (!/^(https?|wss?):\/\//.test(u)) u = 'https://' + u; return u.replace(/^http/, 'ws'); }
+  connect(url, name) {
+    return new Promise((resolve, reject) => {
+      let ws; try { ws = new WebSocket(this.wsUrl(url)); } catch (e) { reject(e); return; }
+      this.ws = ws; let opened = false;
+      const timer = setTimeout(() => { if (!opened) { ws.close(); reject(new Error('Could not reach the server (it can take a minute to wake up on Render — try again).')); } }, 70000);
+      ws.onopen = () => { opened = true; clearTimeout(timer); try { localStorage.setItem('fogtrial.server', url); } catch (e) { /* ignore */ } this.send({ t: 'hello', name, v: NET_VERSION }); };
+      ws.onmessage = (ev) => { let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; } if (msg.t === 'welcome') { this.pid = msg.pid; resolve(this); } this.onMsg(msg); };
+      ws.onerror = () => { if (!opened) { clearTimeout(timer); reject(new Error('Could not connect to ' + url)); } };
+      ws.onclose = () => { this.ws = null; this.cb.onClose?.(); };
+    });
+  }
+  get connected() { return !!this.ws && this.ws.readyState === 1; }
+  send(o) { if (this.connected) this.ws.send(JSON.stringify(o)); }
+  close() { try { this.ws?.close(); } catch (e) { /* ignore */ } this.ws = null; }
+  onMsg(msg) {
+    switch (msg.t) {
+      case 'room': this.room = msg; this.cb.onRoom?.(msg); break;
+      case 'err': this.cb.onError?.(msg.msg); break;
+      case 'start': this.startMatch(msg); break;
+      case 'snap': if (this.m) this.applySnap(msg); break;
+      case 'end': if (this.m) { const r = msg.results; r.playerRole = this.role === 'killer' ? 'killer' : this.role === 'survivor' ? 'survivor' : 'spectate'; const me = this.me; r.player = me && me.kind === 'survivor' ? { name: me.name, outcome: me.outcome || (me.alive ? 'Alive' : '—') } : null; r.survivors.forEach((s, i) => (s.isYou = this.role === 'survivor' && i === this.index)); this.cb.onEnd?.(r); } this.m = null; break;
+      case 'left': this.room = null; break;
+    }
+  }
+
+  // ------------------------------------------------------------ mirror match
+  startMatch(msg) {
+    const cfg = { ...msg.cfg, playerRole: msg.role === 'killer' ? 'killer' : msg.role === 'survivor' ? 'survivor' : 'spectate', mirror: true };
+    // the server's human flags decide isPlayer; the local role only decides whose eyes we use
+    const m = new Match(cfg);
+    for (const s of m.survivors) s.ai = null;
+    for (const k of m.killers) k.bot = null;
+    for (const arr of Object.keys(LISTS)) m[arr] = [];
+    m.playerCtls = []; m.aiPaused = true; m.net = this;
+    this.role = msg.role; this.index = msg.index; this.m = m; this.objs = new Map(); this.reg = new Registry(m); this.hist = []; this.seq = 0; this.first = true;
+    const me = msg.role === 'killer' ? m.killers[msg.index] : msg.role === 'survivor' ? m.survivors[msg.index] : null; this.me = me;
+    Object.defineProperty(m, 'player', { value: me, configurable: true });
+    if (me?.kind === 'killer') m.killer = me;
+    this.input = { mx: 0, my: 0, walk: false, crouch: false, aimX: me ? me.x : 0, aimY: me ? me.y : 0 };
+    const net = this;
+    m.playerCtl = me?.kind === 'survivor' ? { in: this.input, prompts: () => net.prompts } : null;
+    this.pred = me ? { x: me.x, y: me.y, r: me.r } : null;
+    this.rebuildReg();
+    this.cb.onStart?.(m, msg);
+  }
+  rebuildReg() {
+    const reg = this.reg, m = this.m; reg.byObj.clear(); reg.byRef.clear();
+    reg.set(m, 'm'); reg.set(m.map, 'map'); reg.set(m.world, 'world'); reg.set(m.map.nav, 'nav'); reg.set(m.bb, 'bb'); reg.set(m.perks, 'perks'); reg.set(m.events, 'events'); reg.set(m.fx, 'fx'); reg.set(m.map.hatch, 'ht');
+    m.survivors.forEach((s, i) => reg.set(s, 'sv:' + i)); m.killers.forEach((k, i) => reg.set(k, 'kl:' + i));
+    for (const [arr, p] of Object.entries(STATIC)) (m.map[arr] || []).forEach((o, i) => reg.set(o, p + ':' + i));
+    for (const t of m.map.tiles || []) reg.set(t, 'ti:' + t.id);
+    for (const [ref, o] of this.objs) reg.set(o, ref);
+  }
+  resolve = (ref) => {
+    const o = this.reg.byRef.get(ref); if (o) return o;
+    const p = ref.split(':')[0];
+    if (Object.values(LISTS).includes(p)) { const n = makeObj('Obj'); this.objs.set(ref, n); this.reg.set(n, ref); return n; } // seen before its list entry
+    return null;
+  };
+  isEntity = (o) => this.reg.byObj.has(o);
+
+  applySnap(s) {
+    const m = this.m;
+    // 1. dynamic lists (devices, minions, projectiles…)
+    for (const arr in s.l) {
+      const refs = s.l[arr];
+      const keep = new Set(refs);
+      for (const ref of [...this.objs.keys()]) if (ref.startsWith(LISTS[arr] + ':') && !keep.has(ref)) { this.objs.delete(ref); }
+      m[arr] = refs.map((ref) => {
+        let o = this.objs.get(ref);
+        const cls = s.e[ref]?.$cls;
+        if (!o || (cls && Object.getPrototypeOf(o) === Object.prototype && cls !== 'Obj')) { const n = makeObj(cls || 'Obj'); if (o) Object.assign(n, o); o = n; this.objs.set(ref, o); }
+        return o;
+      });
+    }
+    this.rebuildReg();
+    // 2. entity fields
+    for (const ref in s.e) {
+      const d = s.e[ref];
+      let o;
+      if (ref.startsWith('kp:')) o = m.killers[+ref.slice(3)]?.power; else o = ref === 'm' ? m : this.reg.byRef.get(ref);
+      if (!o) continue;
+      const smooth = SMOOTH.has(ref.split(':')[0]);
+      for (const k in d) {
+        if (k === '$cls') continue;
+        if (smooth && (k === 'x' || k === 'y')) { o['_n' + k] = d[k]; if (this.first || o['_seen'] !== true) o[k] = d[k]; continue; }
+        applyField(o, k, d[k], this.resolve, this.isEntity);
+      }
+      if (smooth) { o._seen = true; o._nt = performance.now(); }
+    }
+    // 3. world geometry that changes during play: dropped / broken pallets, opened gates
+    for (const p of m.map.pallets) { const want = p.state === 'down'; if (want !== !!p._inWorld) { if (want) m.world.add(p.solid); else m.world.remove(p.solid); p._inWorld = want; } }
+    for (const g of m.map.gates) if (g.open && !g._gone) { m.world.remove(g.solid); g._gone = true; }
+    // 4. streamed feeds (scratch marks, noises, notifications, AI log…)
+    for (const f in s.f) {
+      const F = s.f[f]; let arr = (m[f] ||= []);
+      arr = arr.filter((it) => (it._seq || 0) >= F.min);
+      for (const [q, v] of F.add) { const it = dec(v, this.resolve); if (it && typeof it === 'object') it._seq = q; arr.push(it); }
+      m[f] = arr;
+    }
+    if (s.fx) { m.fx.flash = Math.max(m.fx.flash, s.fx.flash); m.fx.flashColor = s.fx.flashColor; }
+    // 5. effects and sounds that happened on the server
+    for (const e of s.ev || []) {
+      try {
+        if (e.f) m.fx[e.f]?.(...e.a.map((x) => dec(x, this.resolve)));
+        else if (e.a && this.audio) this.audio.play(e.a, e.o ? dec(e.o, this.resolve) : undefined);
+      } catch (err) { /* cosmetic */ }
+    }
+    this.serverTime = m.time; this.recvAt = performance.now();
+    if (s.pr) this.prompts = s.pr;
+    if ('ctx' in s) this.ctx = s.ctx;
+    // 6. reconcile our own predicted movement
+    if (this.me && s.ack !== undefined) this.reconcile(s.ack);
+    this.first = false;
+  }
+
+  // ------------------------------------------------------------ prediction
+  canPredict() {
+    const me = this.me; if (!me) return false;
+    if (me.kind === 'survivor') {
+      if (!me.standing || me.vault || me.trap || me.control || me.health === 'dying') return false;
+      const moving = Math.hypot(this.input.mx, this.input.my) > 0.1;
+      if (me.action && (!moving || ['dropPallet', 'useEmp', 'vault', 'unhookSelf'].includes(me.action.type))) return false;
+      return true;
+    }
+    if (me.action || me.stunT > 0 || me.attack?.state === 'lunge') return false;
+    if (me.power.overrideMove?.(0, this.m)) return false;
+    return true;
+  }
+  stepPred(P, mx, my, dt, walk, crouch) {
+    const me = this.me, m = this.m; const l = Math.hypot(mx, my); if (l < 0.1) return;
+    let sp;
+    if (me.kind === 'survivor') { const mm = me.moveMode; me.moveMode = crouch ? 'crouch' : walk ? 'walk' : 'run'; sp = me.speed(); me.moveMode = mm; }
+    else sp = me.baseSpeed(m);
+    m.world.move(P, (mx / l) * sp * dt, (my / l) * sp * dt, me.r, (q) => !(q.kind === 'gate' && q.ref.open));
+  }
+  reconcile(ack) {
+    const me = this.me, P = this.pred;
+    if (me._nx === undefined) return;
+    this.hist = this.hist.filter((h) => h.seq > ack);
+    P.x = me._nx; P.y = me._ny;
+    if (this.canPredict()) for (const h of this.hist) this.stepPred(P, h.mx, h.my, h.dt, h.walk, h.crouch);
+  }
+  // per render frame
+  frame(dt, input) {
+    const m = this.m; if (!m) return;
+    if (this.recvAt) m.time = this.serverTime + Math.min(0.3, (performance.now() - this.recvAt) / 1000);
+    m.fx.update(dt);
+    const now = performance.now();
+    // others: glide toward the last server position (with a little velocity lead)
+    for (const e of [...m.survivors, ...m.killers, ...m.minions]) {
+      if (e === this.me || e._nx === undefined) continue;
+      const age = Math.min(0.12, (now - (e._nt || now)) / 1000);
+      const tx = e._nx + (e.vx || 0) * age, ty = e._ny + (e.vy || 0) * age;
+      if (Math.hypot(tx - e.x, ty - e.y) > 6 * M) { e.x = tx; e.y = ty; }
+      else { const k = Math.min(1, dt * 16); e.x += (tx - e.x) * k; e.y += (ty - e.y) * k; }
+    }
+    for (const p of m.projectiles) if (p.vx !== undefined && !p.arc) { p.x += p.vx * dt; p.y += p.vy * dt; }
+    // me: predicted movement from my own input, corrected by the server
+    const me = this.me; if (!me || me._nx === undefined) return;
+    const P = this.pred;
+    if (this.canPredict()) {
+      this.hist.push({ seq: this.seq + 1, mx: input.mx, my: input.my, dt, walk: input.walk, crouch: input.crouch });
+      if (this.hist.length > 240) this.hist.shift();
+      this.stepPred(P, input.mx, input.my, dt, input.walk, input.crouch);
+    } else { this.hist.length = 0; const k = Math.min(1, dt * 18); P.x += (me._nx - P.x) * k; P.y += (me._ny - P.y) * k; }
+    if (Math.hypot(P.x - me.x, P.y - me.y) > 5 * M) { me.x = P.x; me.y = P.y; }
+    else { const k = Math.min(1, dt * 30); me.x += (P.x - me.x) * k; me.y += (P.y - me.y) * k; }
+    if (me.kind === 'killer' && !me.power.lockFacing && input.aim !== undefined) me.facing = input.aim;
+  }
+  // ------------------------------------------------------------ input
+  // held: current key state; presses: edge-triggered keys since the last send
+  sendInput(dt, held, presses) {
+    for (const k in presses) if (presses[k]) this.pending[k] = k === 'wheel' ? (this.pending.wheel || 0) + presses[k] : presses[k];
+    this.sendT -= dt;
+    const urgent = Object.keys(this.pending).length > 0;
+    if (this.sendT > 0 && !urgent) return;
+    this.sendT = 1 / 30;
+    this.seq++;
+    this.send({ t: 'in', seq: this.seq, ...held, p: this.pending });
+    this.pending = {};
+  }
+  sendCheck(res) { this.send({ t: 'chk', res }); }
+}
+
+return { NetClient };
+};
 __defs["js/main.js"] = function(){
 // App shell: game-state flow (LOBBY → LOADOUT → MAP_LOADING → match → RESULTS),
 // fixed-step loop, player input → killer, rendering, HUD, menus and debug.
@@ -14300,6 +14763,7 @@ const { Menus } = __req("js/ui/menus.js");
 const { DebugPanel } = __req("js/ui/debug.js");
 const { STORY_LEVELS, levelConfig, loadProgress, saveProgress } = __req("js/story/levels.js");
 const { MAPS } = __req("js/maps/maps.js");
+const { NetClient } = __req("js/net/client.js");
 
 const canvas = document.getElementById('game');
 const renderer = new Renderer(canvas);
@@ -14328,8 +14792,60 @@ const menus = new Menus(document.getElementById('screen'), {
     app.settings[k] = v; saveSettings();
     if (k === 'volume') audio.setVolume(v); if (k === 'zoom') cam.userZoom = v; if (k === 'hints') document.body.classList.toggle('nohints', v === false);
   },
+  net: () => getNet(),
   spectate: (d) => startMatch({ mapId: 'rotwood', killerId: 'trapper', survivorCount: 4, difficulty: d, killerPerks: [], playerRole: 'spectate', killerDifficulty: d }, null),
 });
+
+// ---------------------------------------------------------------- multiplayer
+let net = null;
+function getNet() {
+  if (net) return net;
+  net = new NetClient({
+    onRoom: (st) => { if (app.phase === 'MATCH') return; if (menus.inRoom || menus.mpWaiting || app.phase === 'RESULTS' && false) menus.mpRoom(st); },
+    onStart: (m, msg) => startNetMatch(m, msg),
+    onEnd: (res) => { res.net = true; app.match = null; setPhase('RESULTS'); menus.inRoom = false; menus.results(res, {}); },
+    onError: (msg) => { if (app.phase === 'MATCH') app.match?.notifyK(msg, '#e05a5a'); else if (menus.mpWaiting && !net.room) menus.mpConnect(msg); else menus.toast(msg); },
+    onClose: () => { const wasIn = app.phase === 'MATCH' && app.match?.net; net.room = null; menus.inRoom = false; if (wasIn) { app.match = null; setPhase('LOBBY'); } if (wasIn || menus.mpWaiting || menus.root.querySelector('.mproom')) menus.mpConnect('Disconnected from the server.'); },
+  });
+  net.audio = audio;
+  return net;
+}
+function startNetMatch(m, msg) {
+  audio.init();
+  menus.hide(); menus.inRoom = false;
+  app.match = m; app.cfg = m.cfg; app.story = null; app.paused = false; app.spectating = msg.role === 'spectator'; app.skip = false; app.specIdx = 0;
+  hud = msg.role === 'survivor' ? survivorHud : killerHud;
+  renderer.setMap(m.map); cam.snap(viewTarget(m)); cam.zoom = cam.baseZoom() * cam.userZoom;
+  renderer.debug.on = false; debug.root.hidden = true; syncDebugClass();
+  hud.build(m);
+  setPhase('MATCH');
+}
+// multiplayer input: same keys, sent to the server instead of driving the local match
+function applyNetInput(m, dt) {
+  const me = m.player; const nc = m.net;
+  let mx = (input.is('right') ? 1 : 0) - (input.is('left') ? 1 : 0), my = (input.is('down') ? 1 : 0) - (input.is('up') ? 1 : 0);
+  const l = Math.hypot(mx, my); if (l > 0) { mx /= l; my /= l; }
+  if (!me || app.paused) { nc.frame(dt, { mx: 0, my: 0 }); return; }
+  const w = cam.toWorld(input.mouse.x, input.mouse.y);
+  if (me.kind === 'survivor') {
+    const held = { mx, my, walk: input.is('walk'), crouch: input.is('crouch'), aimX: w.x, aimY: w.y, e: input.is('secondary'), space: input.is('interact'), item: input.mouse.r || input.is('power') };
+    Object.assign(nc.input, held);
+    let spaceP = input.was('interact');
+    // skill checks are judged here, against the needle the player actually saw
+    const c = me.skillCheck;
+    if (c && spaceP) { const pos = (m.time - c.t0 - c.warn) / c.dur; if (pos > -0.2) { const res = pos >= c.zone && pos <= c.zone + c.good ? (pos <= c.zone + c.great ? 'great' : 'good') : 'fail'; nc.sendCheck(res); me.skillCheck = null; spaceP = false; audio.play(res === 'fail' ? 'genfail' : 'ui'); } }
+    nc.frame(dt, held);
+    nc.sendInput(dt, held, { eP: input.was('secondary'), spaceP, itemP: input.mouse.rP || input.was('power'), perkP: input.was('perk'), leftP: input.was('left'), rightP: input.was('right') });
+  } else {
+    const p = cam.toScreen(me.x, me.y);
+    const held = { mx, my, aim: Math.atan2(input.mouse.y - p.y, input.mouse.x - p.x), aimDist: Math.hypot(input.mouse.y - p.y, input.mouse.x - p.x) / cam.zoom, lmb: input.mouse.l, rmb: input.mouse.r || input.is('power'), e: input.is('secondary'), space: input.is('interact') };
+    if (me.power.viewPoint?.(m)) { held.aimX = w.x; held.aimY = w.y; }
+    me.input.aim = held.aim; me.input.aimDist = held.aimDist; if (held.aimX !== undefined) { me.input.aimX = held.aimX; me.input.aimY = held.aimY; }
+    let slot = 0; for (let n = 1; n <= 4; n++) if (input.was('slot' + n)) slot = n;
+    nc.frame(dt, held);
+    nc.sendInput(dt, held, { lmbP: input.mouse.lP, rmbP: input.mouse.rP || input.was('power'), rmbR: input.mouse.rR, eP: input.was('secondary'), spaceP: input.was('interact'), cycleP: input.was('cycle'), wheel: input.mouse.wheel && wheelForAbility(me) ? input.mouse.wheel : 0, slot });
+  }
+}
 
 function resize() { const w = window.innerWidth, h = window.innerHeight; renderer.resize(w, h); cam.resize(w, h); }
 window.addEventListener('resize', resize); resize();
@@ -14386,7 +14902,7 @@ function togglePause() {
   if (app.phase !== 'MATCH') return;
   app.paused = !app.paused;
   if (app.paused) {
-    menus.pause(() => togglePause(), () => { app.paused = false; app.match = null; setPhase('LOBBY'); menus.main(); }, {
+    menus.pause(() => togglePause(), () => { app.paused = false; const wasNet = app.match?.net; app.match = null; setPhase('LOBBY'); if (wasNet) { net.send({ t: 'leave' }); net.room = null; menus.mpConnect('You left the match.'); } else menus.main(); }, {
       zoom: cam.userZoom, volume: audio.vol, debug: renderer.debug.on,
       onZoom: (z) => { cam.userZoom = z; app.settings.zoom = z; saveSettings(); },
       onVolume: (v) => { audio.setVolume(v); app.settings.volume = v; saveSettings(); },
@@ -14407,6 +14923,7 @@ function viewTarget(m) {
   const p = m.player;
   if (p && (p.kind === 'killer' || p.alive)) return p;
   if (p && p.kind === 'survivor') { const alive = m.survivors.filter((s) => s.alive); return alive.length ? alive[app.specIdx % alive.length] : m.killer; }
+  if (m.net && app.specIdx) { const all = [...m.killers, ...m.survivors.filter((s) => s.alive)]; return all[app.specIdx % all.length]; }
   return m.killer;
 }
 function applySurvivorInput(m) {
@@ -14449,7 +14966,14 @@ function frame(now) {
   if (input.was('debug') && m) { renderer.debug.on = !renderer.debug.on; debug.root.hidden = !renderer.debug.on; syncDebugClass(); app.settings.debug = renderer.debug.on; saveSettings(); }
   if (input.was('pause')) togglePause();
   if (m && (app.phase === 'MATCH' || app.phase === 'RESULTS')) {
-    if (app.phase === 'MATCH' && !app.paused) {
+    if (app.phase === 'MATCH' && m.net) {
+      if (input.was('zoomIn')) cam.userZoom = Math.min(1.5, cam.userZoom + 0.08); if (input.was('zoomOut')) cam.userZoom = Math.max(0.7, cam.userZoom - 0.08);
+      if (input.mouse.wheel && (!m.player || m.player.kind !== 'killer' || !wheelForAbility(m.player))) cam.userZoom = Math.max(0.7, Math.min(1.5, cam.userZoom - input.mouse.wheel * 0.08));
+      applyNetInput(m, dt);
+      const p = m.player;
+      if (!p || (p.kind === 'survivor' && !p.alive)) { if (input.was('spectateNext')) app.specIdx++; }
+      audio.setMood(moodFor(m));
+    } else if (app.phase === 'MATCH' && !app.paused) {
       if (input.was('zoomIn')) cam.userZoom = Math.min(1.5, cam.userZoom + 0.08); if (input.was('zoomOut')) cam.userZoom = Math.max(0.7, cam.userZoom - 0.08);
       if (input.mouse.wheel && (m.cfg.playerRole !== 'killer' || !wheelForAbility(m.killer))) { cam.userZoom = Math.max(0.7, Math.min(1.5, cam.userZoom - input.mouse.wheel * 0.08)); app.settings.zoom = cam.userZoom; }
       applyInput(m);
@@ -14470,7 +14994,7 @@ function frame(now) {
     const aim = vp ? 0 : vt.kind === 'killer' ? (vt.input.aim ?? 0) : (vt.isPlayer && m.playerCtl ? Math.atan2(m.playerCtl.in.aimY - vt.y, m.playerCtl.in.aimX - vt.x) : vt.facing);
     cam.update(dt, vp ? { x: vp.x, y: vp.y, kind: 'pod' } : vt, m.map, aim, m.fx.shakeAmt);
     renderer.draw(m, cam, { viewer: vt });
-    if (app.phase === 'MATCH') { hud.update(m, dt, m.cfg.playerRole === 'killer' ? m.killerContext() : null); debug.update(m, dt); }
+    if (app.phase === 'MATCH') { hud.update(m, dt, m.net ? (m.player?.kind === 'killer' ? m.net.ctx : null) : m.cfg.playerRole === 'killer' ? m.killerContext() : null); if (!m.net) debug.update(m, dt); }
   } else {
     // idle backdrop
     const ctx = renderer.ctx; ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
@@ -14480,7 +15004,7 @@ function frame(now) {
 }
 
 setPhase('LOBBY');
-menus.main();
+{ const code = new URLSearchParams(location.search).get('room'); if (code) menus.mpConnect('', code.toUpperCase().slice(0, 4)); else menus.main(); }
 requestAnimationFrame(frame);
 window.__fog = app; // handy in the console
 app.start = (cfg) => startMatch(cfg, null); // tests / console: start any configuration
